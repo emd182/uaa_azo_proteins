@@ -25,6 +25,8 @@ from pyrosetta.rosetta.protocols.minimization_packing import \
 from pyrosetta.rosetta.core.pack.task.operation import \
     IncludeCurrent, ExtraRotamers, OperateOnResidueSubset, \
     RestrictToRepackingRLT, PreventRepackingRLT
+from pyrosetta.rosetta.protocols.grafting.simple_movers import \
+    DeleteRegionMover
 from pyrosetta.rosetta.protocols.relax import FastRelax
 from pyrosetta.rosetta.core.select import get_residues_from_subset
 from pyrosetta.rosetta.core.simple_metrics.metrics import \
@@ -81,7 +83,7 @@ def parse_args():
     return parser.parse_args()
 
 def print_out(outstring):
-    print("emd182::"+str(outstring))
+    print_out("emd182::"+str(outstring))
 
 def out_directory(directory):
     """ 
@@ -167,9 +169,9 @@ def build_move_map(chi=False, bb=False, jump=False):
     Building movemap - by default, everything is Off
     """
     mm = pr.MoveMap()
-    print("chi: " + str(chi))
-    print("bb: " + str(bb))
-    print("jump: " + str(jump))
+    print_out("chi: " + str(chi))
+    print_out("bb: " + str(bb))
+    print_out("jump: " + str(jump))
     mm.set_chi(chi)
     mm.set_bb(bb)
     mm.set_jump(jump)
@@ -198,19 +200,19 @@ def fast_relax_mutant(pose, task_factory, move_map, score_function):
     fast_relax.set_task_factory(task_factory)
     fast_relax.set_movemap(move_map)
     score_function(pose)
-    packer = task_factory.create_task_and_apply_task_operations(pose)
+    packer = task_factory.create_task_and_apply_taskoperations(pose)
     print_out("packer task")
-    print(packer)
+    print_out(packer)
 
     traj_idx = 0 
     decoys = 1
-    print("emd182::Running Fast Relax")
+    print_out("emd182::Running Fast Relax")
     while traj_idx < decoys:
-        print("Round Number: " + str(traj_idx))
+        print_out("Round Number: " + str(traj_idx))
         pose_copy = pr.Pose()
         pose_copy.assign(pose)
-        print("emd182:: pose total residues: " + str(pose.total_residue()) )
-        print("emd182:: pose total residues: " + str(pose_copy.total_residue()) )
+        print_out("emd182:: pose total residues: " + str(pose.total_residue()) )
+        print_out("emd182:: pose total residues: " + str(pose_copy.total_residue()) )
         fast_relax.apply(pose_copy)
         decoy_energy = total_energy(pose_copy, score_function)
         if traj_idx == 0:
@@ -237,10 +239,10 @@ def repack_and_minimize_mutant(pose, task_factory, move_map, score_function,  ro
     min_mover.movemap(move_map)
     min_mover.score_function(score_function)
     
-    print("Checking Packertask")
+    print_out("Checking Packertask")
     packer = task_factory.create_task_and_apply_taskoperations(pose)
     print_out("packer task")
-    print(packer)
+    print_out(packer)
 
     for rnd in range(rounds):
         print_out("round " + str(rnd+1) + " of repack and min")
@@ -308,7 +310,7 @@ def main(args):
     #parser.add_argument('-rem', '--remove_ligand', action='store_true', \
     #parser.add_argument('-rig_lig', '--rigid_ligand', action='store_true', \
 
-    print("emd182::Starting rosetta with the following parameters: " + init_args)
+    print_out("emd182::Starting rosetta with the following parameters: " + init_args)
     pr.init(init_args)
     pose = pr.pose_from_pdb(args.input_pdb)
     
@@ -325,26 +327,37 @@ def main(args):
         ligand = ResidueNameSelector()
         ligand.set_residue_name3(lig_name)
     
-    print("emd182::Loading Unnatural " + uaa + \
+    print_out("Loading Unnatural " + uaa + \
         " onto residue number " + str( args.residue_number ) )
-
+    
     #Setting up Mutation
     mutater = pr.rosetta.protocols.simple_moves.MutateResidue()
     mutating_residue = ResidueIndexSelector(int(args.residue_number))
     mutater.set_selector(mutating_residue)
     mutater.set_res_name(uaa)
-    print("emd182::loading residue to mutate into: " + str(args.residue_number))
+    print_out("emd182::loading residue to mutate into: " + str(args.residue_number))
+
+    lig_vector = selector_to_vector(ligand, pose)
+    if args.ligand_type == 'protein' and delta_resi in lig_vector:
+        print_out("Selected residue for mutation is part of input selection: " + \
+                delta_resi + " is selected, but is contained in " \
+                + str(lig_vector))
+        print_out("Exiting the python script")
+        sys.exit()
 
     #Build the MoveMap for the mutations.
     move_map = build_move_map(True, True, True)
     
+    out_ligand_file = 'yeslig'
     if args.remove_ligand:
         args.rigid_ligand = False
+        out_ligand_file = 'nolig'
 
-    print("emd182::Start mutations and relaxation script " \
+    print_out("emd182::Start mutations and relaxation script " \
         + str(args.nstruct) + " times.")
 
-    for x in range(0,args.nstruct):
+    for struct in range(0,args.nstruct):
+        print_out(struct)
         #load / reload pose 
         mutant_pose = pr.Pose(pose)
         sf(mutant_pose)
@@ -362,13 +375,6 @@ def main(args):
         if args.design:
             designing_residues = ligand_neighbor_selection(mutating_residue, \
                     args.design, mutant_pose, False)
-        #If the remove-ligand is called, will remove the ligand from the mutant pose
-        if args.remove_ligand:
-            removing_residues = [int(x) for x in get_residues_from_subset(ligand.apply(mutant_pose)) ]
-            print_out("Removing the following residues, from " + \
-                    str(removing_residues[0]) + " to " + str(removing_residues[-1]))
-            pr.rosetta.protocols.grafting.delete_region(mutant_pose, \
-                    removing_residues[0], removing_residues[-1])
         
         #Combining the repacking neighborhoods around the ligand and mutant
         repacking_neighbors = residue_selection(residues_around_ligand, \
@@ -387,7 +393,16 @@ def main(args):
                 for res in lig_resids:
                     if res in designing_resids:
                         repacking_resids.remove(res)
-
+        
+        #If the remove-ligand is called, will remove the ligand from the mutant pose
+        if args.remove_ligand:
+            removing_resids = selector_to_vector(ligand, mutant_pose)
+            for res in removing_resids:
+                if res in repacking_resids:
+                    repacking_resids.remove(res)
+            remove_lig = DeleteRegionMover()
+            remove_lig.set_residue_selector(ligand)
+            remove_lig.apply(mutant_pose)
             
         tf = task_factory_builder(repacking_residues=repacking_resids, \
                 designing_residues=design_around_mutant)
@@ -397,7 +412,7 @@ def main(args):
         
         #turn off constraints if requested - default is on
         if not args.no_constraints:
-            pose = coord_constrain_pose(mutant_pose)
+            mutant_pose = coord_constrain_pose(mutant_pose)
         
         #Repack or minimize if selected
         if args.design:
@@ -407,15 +422,19 @@ def main(args):
             print_out("Running repack and minimize")
             new_pose = repack_and_minimize_mutant(mutant_pose, tf, move_map, sf)
         
-        outname = '{}_{}{}_{}.pdb'.format(args.input_pdb.strip('.pdb'), uaa, args.residue_number, str(x))
+        #output the name of the file
+        #Includes original pdb namne, residue number and uaa, nstruct number,
+        #and if the ligand is included or not.
+        outname = '{}_{}_{}_{}_{}.pdb'.format(args.input_pdb.strip('.pdb'), \
+                args.residue_number, uaa, out_lig_file, str(struct))
         if args.out_suffix:
             outname = outname.strip(".pdb") + args.out_suffix + ".pdb"
-        print("emd182::Outputting protein file as : " + outname )
+        print_out("Outputting protein file as : " + outname )
 
         out_dir = out_directory(args.out_directory)
         outname = join(out_dir, outname)
 
-        print("emd182::Writing Outputting protein file as : " + outname )
+        print_out("Writing Outputting protein file as : " + outname )
         
         new_pose.dump_pdb(outname)
 

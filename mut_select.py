@@ -15,9 +15,12 @@ from pyrosetta.rosetta.core.select.residue_selector import \
     NeighborhoodResidueSelector, InterGroupInterfaceByVectorSelector, \
     NotResidueSelector, AndResidueSelector
 from pyrosetta.rosetta.core.select import get_residues_from_subset
-import argparse
-import sys
-from rosetta.protocols.simple_moves import MutateResidue
+from pyrosetta.rosetta.protocols.enzdes import DetectProteinLigandInterface 
+from pyrosetta.rosetta.std import set_unsigned_long_t
+from pyrosetta.rosetta.utility import vector1_bool
+from pyrosetta.rosetta.protocols.simple_moves import MutateResidue
+import argparse, sys, subprocess
+
 
 #Script starting from here
 def parse_args():
@@ -46,6 +49,10 @@ def parse_args():
     parser.add_argument('-r', '--radius', type=float, required=False, default=8.0,
                         help='Radius around the bound ligand to identify residues \
                         to mutate.')
+    parser.add_argument('-c1', '--cut_1', type=float, required=False, default=6.0)
+    parser.add_argument('-c2', '--cut_2', type=float, required=False, default=8.0)
+    parser.add_argument('-c3', '--cut_3', type=float, required=False, default=10.0)
+    parser.add_argument('-c4', '--cut_4', type=float, required=False, default=12.0)
     parser.add_argument('-o', '--out_file', type=str, required=False,
                         help='Name of the output file with the list of mutatable\
                         positions')
@@ -59,13 +66,12 @@ def print_notice(outstring):
 def main(args):
     
     if args.ligand_type == 'ligand':
-        init_args = ' '.join(['-extra_res_fa', args.ligand_name])
+        init_args = ' '.join(['-extra_res_fa', args.ligand_name]) 
         lig_name = args.ligand_name.split('/')[-1].strip('.params')
     else:
         init_args = ''
     
     pr.init(init_args)
-
     sf = pr.get_fa_scorefxn()
     sf.add_weights_from_file('ref2015')
 
@@ -99,7 +105,33 @@ def main(args):
     non_lig_residues = AndResidueSelector()
     non_lig_residues.add_residue_selector(ligand_interface)
     non_lig_residues.add_residue_selector(not_ligand)
+
     
+
+#Starting point for the DetectProteinLigandInterface() python script
+    ligand_residues = get_residues_from_subset(ligres.apply(pose))
+    resi = set_unsigned_long_t()
+    for residue in [x for x in ligand_residues]:
+        resi.add(residue)
+    print(type(ligand_residues))
+    print(type(ligres.apply(pose)))
+    print(resi)
+    
+    repack_res = vector1_bool()
+    design_res = vector1_bool()
+    print(len(not_ligand.apply(pose)))
+    for x in range(len(not_ligand.apply(pose))): 
+        repack_res.append(False)
+        design_res.append(False)
+    
+    print_notice("Start of Detect Protein Ligand Interface")
+    interface = DetectProteinLigandInterface()
+    interface.find_design_interface(pose, resi, args.cut_1, args.cut_2, \
+                    args.cut_3, args.cut_4, repack_res, design_res)
+    print_notice("End of Detect Protein Ligand Interface")
+    print_notice("Read stdout to collect positions.")
+
+
     #Collecting the residues from the subset
     neighbor_residues = get_residues_from_subset(non_lig_residues.apply(pose) )
     print_notice("Ligand found, neighbor residues are: " + ', '.join([str(x) for x in neighbor_residues]))
