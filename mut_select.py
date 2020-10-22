@@ -18,6 +18,7 @@ from pyrosetta.rosetta.core.select import get_residues_from_subset
 from pyrosetta.rosetta.protocols.enzdes import DetectProteinLigandInterface 
 from pyrosetta.rosetta.std import set_unsigned_long_t
 from pyrosetta.rosetta.utility import vector1_bool
+from pyrosetta.rosetta.protocols.symmetry import SetupForSymmetryMover
 from pyrosetta.rosetta.protocols.simple_moves import MutateResidue
 import argparse, sys, subprocess
 
@@ -49,6 +50,9 @@ def parse_args():
     parser.add_argument('-r', '--radius', type=float, required=False, default=8.0,
                         help='Radius around the bound ligand to identify residues \
                         to mutate.')
+    parser.add_argument('-sym', '--symmetric_file', type=str, required=False, 
+                        default=None, help='Input symmetric file to allow for \
+                        positions to be selected including symmetry.')
     parser.add_argument('-o', '--out_file', type=str, required=False,
                         help='Name of the output file with the list of mutatable\
                         positions')
@@ -76,6 +80,11 @@ def main(args):
 
     print_notice("Scaffold protein Loaded Successfully!")
     print_notice("Scaffold protein has"+str(pose.total_residue())+"residues.")
+
+    if args.symmetric_file:
+        sfsm = SetupForSymmetryMover(args.symmetric_file)
+        sfsm.apply(pose)
+
     #Importing list of residues if the ligand is a protein
     if args.ligand_type == 'protein':
         ligres = ResidueIndexSelector(args.residue_set)
@@ -84,7 +93,8 @@ def main(args):
         ligres = ResidueNameSelector()
         ligres.set_residue_name3(lig_name)
 
-    print_notice("Ligand found at resnum: " + str(get_residues_from_subset( ligres.apply(pose) ) ) )
+    print_notice("Ligand found at resnum: " + \
+            str(get_residues_from_subset(ligres.apply(pose))) )
     
     #Setting the proteins not in the ligand
     not_ligand = NotResidueSelector()
@@ -118,9 +128,29 @@ def main(args):
         resid = pose.pdb_info().pose2pdb(residue).split()
         pdb_residues.append(''.join(resid))
 
-    pdb_residues.append('0')
     print_notice("Ligand found, neighbor residues are: " + ', '.join([x for x in pdb_residues]))
     print_notice("Ligand found, total neighbor residues is " + str(len(pdb_residues)))
+    
+    #Removing residues in the REMARKS section
+    remove_set = []
+    f = open(args.input_pdb, 'r')
+    for line in f.readlines():
+        if 'REMARK' in line:
+            items = [x for x in line.split(' ') if x != '']
+            residue_set = [int(items[6]), int(items[11])]
+            for resi in residue_set:
+                if resi not in remove_set:
+                    remove_set.append(resi)
+    
+    residue_final_set = []
+    for resi in pdb_residues:
+        idx = int(resi[0:-1])
+        if idx not in remove_set and resi[-1] == 'A':
+            residue_final_set.append(resi)
+    #Final list for the designable residues
+    residue_final_set.append('0')
+    print_notice("Neighbor residues cleaned \n \n Residues are: " +\
+            ', '.join([x for x in residue_final_set]))
 
     if args.out_file:
         out_name = args.out_file
@@ -128,7 +158,7 @@ def main(args):
         out_name = args.input_pdb.strip('.pdb') + '_lig.pos'
     
     f = open(out_name, "w")
-    for x in pdb_residues:
+    for x in residue_final_set:
         f.write(x+'\n')
     f.close
     print("emd182::Wrote ligand position residues of pdb file " + args.input_pdb + " to filename: " + out_name)
@@ -136,3 +166,4 @@ def main(args):
 if __name__ == '__main__':
     args = parse_args()
     main(args)
+

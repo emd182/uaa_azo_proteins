@@ -61,6 +61,9 @@ def parse_args():
                         the same 3 letters for the lig name.')
     parser.add_argument('-uaa', '--unnatural', action='store_true', required=False,
                         help='Stating if unnaturals are used - will require params files')
+    parser.add_argument('-enz', '--enzdes_cstfile', type=str, required=False,
+                        help='Add for implementation of constraints used in the \
+                        design of the protein. Run without for unconstrained scores')
     parser.add_argument('-cis', '--cis_params_file', type=str, \
                         required=any(x in ['--uaa', '--unnatural'] for x in sys.argv), \
                         help='Cis state params files for unnatural amino acid inclusions')
@@ -69,6 +72,9 @@ def parse_args():
                         help='Trans state params files for unnatural amino acid inclusions')
     parser.add_argument('-pre', '--previously_run_files', type=str, required=False, \
                         default=None, help="Load data saved from a previous run.")
+    parser.add_argument('-lim', '--value_limits', type=float, required=False, \
+                        default=15.0, help="Add limits of total scores in the case the\
+                        apo states are diverge too greatly from the wildtype.")
     parser.add_argument('-out', '--out_file', type=str, required=False, \
                         help='Outputs a pickled set of information for later analysis.\
                         Or to prevent having to repeat the analysis.')
@@ -174,18 +180,42 @@ def make_histogram(data, bins, xlabel, ylabel, title):
 def add_to_legend(legend_list, colo, label):
     legend_list.append(mpatches.Patch(color=colo, label=label))
 
+def make_scatterplot(xvalues, yvalues, xlabel, ylabel, title, filename=None,\
+        colors='b', xylimits=[[-10,10],[-10,10]], markers='o', outdir='./',\
+        tick_labels=None, lines=None):
+    xvals = xvalues
+    yvals = yvalues
+    plt.scatter(xvals, yvals, s=5, c=colors, marker=markers)
+    if lines:
+        for line in lines:
+            plt.plot(line[0],line[1], '-k', linewidth=1)
+    axes = plt.gca()
+    axes.set_xlim(xylimits[0])
+    axes.set_ylim(xylimits[1])
+    if tick_labels:
+        for num in range(0, len(xvals)):
+            plt.annotate(tick_labels[num], (xvals[num],yvals[num]), \
+                textcoords="offset points",xytext=(0,5), ha='center',\
+                fontsize='x-small')
+    #plt.plot([-10,10],[-10,10], '-ok')
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.title(title)
+    fig = plt.gcf()
+    fig.set_size_inches(5,5)
+    #plt.tight_layout()
+    plt.show()
+    if not filename:
+       filename = title.replace(' ', '_')
+    out_file = outdir + filename + '.png'
+    fig.savefig(out_file, dpi=150)#, bbox_inches='tight')
+    plt.close('all')
+    print_out("writing png file: " + out_file)
+
 def make_bar_plot(bar_values, bar_labels, xlabel, ylabel, title, \
             ymax=10.0, ymin=-10.0, control=0.0, upper_mask=None,  \
             lower_mask=None, out_dir='./', legend_info={'blue':'normalized score'}):
     normal = np.asarray([ x-control for x in bar_values ])
-    #mean = sum(normal)/len(normal)
-    #stdev = ( sum( [(x-mean)**2 for x in normal] ) \
-    #                / len(normal) ) ** 0.5
-    #xmax = mean + 3*stdev
-    #xmin = mean - 3*stdev
-    #normalized = []
-    #for val in normal:
-        #normalized.append(val)
     x = np.asarray(list(range(len(normal))))
     legends = []
     if upper_mask is not None:
@@ -208,11 +238,12 @@ def make_bar_plot(bar_values, bar_labels, xlabel, ylabel, title, \
     plt.ylabel(ylabel)
     plt.title(title)
     plt.ylim([ymin,ymax])
+    plt.tight_layout()
     fig = plt.gcf()
     plt.show()
     out_directory(out_dir)
     out_file = out_dir + title.replace(' ', '_') + '.png'
-    fig.savefig(out_file, dpi=150)
+    fig.savefig(out_file, dpi=150, bbox_inches='tight')
     plt.close('all')
     print_out("Writing png file: " + out_file)
 
@@ -288,6 +319,7 @@ def main(args):
         scored_set = {} #Dictionary of scores at each residue index
         print_out('Taking groups of proteins and scoring them one by one.')
         #Taking protein groups and scoring them one by one.
+        #sys.exit()
         for residue_key in group_set.keys():
             print_out("Now on residue number: "+str(residue_key))
             #Place poses in a dictionary with the key designated as the pdb_file_name.
@@ -297,7 +329,7 @@ def main(args):
             scored_set[residue_key] = scoring_poses(resi_poses, pdb_dict, sf)
             for filename in resi_poses.keys():
                 if pdb_dict[filename]['contain_ligand']:
-                    print_out('may take a shit if things break here')
+                    #print_out('may take a shit if things break here')
                     interaction_energy_addition(resi_poses[filename], ligand, sf, \
                             scored_set[residue_key][filename], pdb_dict[filename]['cisortrans'])
         #Generating wt_data for the two wt poses.
@@ -361,9 +393,6 @@ def main(args):
             if ints == int(key[0:-1]):
                 sorted_residues.append(key)
 
-    print(sorted_residues)
-    print(keysets)
-    #sys.exit()
     #should be a list of numbers
 #Keytypes should be - total_C_True total_T_True sasa_C_True sasa_T_True
 #Keytypes should be - total_C_False total_T_False sasa_C_False sasa_T_False
@@ -385,6 +414,10 @@ def main(args):
                 sorted_residues, "Residue Index", xlabel, title, \
                 control=wt_data[wtkey], out_dir=args.out_directory)
      
+    #for x in sorted_residues:
+    #    if len(averages[x].keys()) != 10:
+    #        print(x)
+    #sys.exit()
      #Second set of graphs are comparing Cis to Trans States
     for key in ['sasa', 'total']:
         xlabel='REU'
@@ -395,7 +428,8 @@ def main(args):
             tkey = '_'.join([key,'T',str(tf)])
             title = ' '.join(["Cis minus Trans", str(key), 'in', out_file_name_pdb, \
                     'with ligand',str(tf)])
-            data_points = np.asarray([averages[x][ckey] - averages[x][tkey] for x in sorted_residues])
+            data_points = np.asarray([averages[x][ckey] - averages[x][tkey] \
+                            for x in sorted_residues])
             if not tf:
                 high_mask = data_points >= 2.0
                 low_mask = data_points <= -2.0
@@ -408,6 +442,7 @@ def main(args):
                     out_dir=args.out_directory, upper_mask=high_mask, lower_mask=low_mask, \
                     legend_info={'red':'nolig cis preferred', 'green':'nolig trans preferred',\
                             'blue':'nolig no preference'})
+
     key = 'interE'
     xlabel='REU'
     ckey = '_'.join([key,'C'])
@@ -416,8 +451,84 @@ def main(args):
                     out_file_name_pdb, 'with ligand',str(tf)])
     make_bar_plot([averages[x][ckey] - averages[x][tkey] for x in sorted_residues], \
                 sorted_residues, "Residue Index", xlabel, title, out_dir=args.out_directory)
+    #parser.add_argument('-lim', '--value_limits', type=float, required=False, \
+    #Finding good data for generating scatterplots of apo vs bound states
+    
+    print_out("Setting up data for the scatterplot")
+    partial_keysets = ['_'.join(x.split('_')[0:2]) for x in keysets if len(x.split('_')) >= 2]
+    print_out("Set of keysets")
+    print(keysets.keys())
+    print_out("WT data keys")
+    print(wt_data.keys())
+    for lines in keysets:
+        if 'inter' in lines:
+            partial_keysets.append(lines)
+    
+    partial_keysets = list(set(partial_keysets))
+    for tf in ['True', 'False']:
+        remove_residues = []
+        for resi in sorted_residues:
+#ass    igning values to necessary checks
+            tot_T_f = averages[resi]['total_T_'+tf]
+            tot_C_f = averages[resi]['total_C_'+tf]
+            wt_f = wt_data['total_'+tf]
+            if abs(tot_T_f - wt_f) > args.value_limits and \
+               abs(tot_C_f - wt_f) > args.value_limits:
+                remove_residues.append(resi)
+#Che    ck to remove models where both models are bad in apo state
+        
+        print_out('removing these residues:')
+        print_out(remove_residues)
+        for resi in set(remove_residues):
+            sorted_residues.remove(resi)
 
-#def make_bar_plot(bar_values, bar_labels, xlabel, ylabel, title, control=0.0):
+    x20=[-20,20]
+    x25=[-5,20]
+    x5=[-5,5]
+    x0=[0,0]
+    apobound = {}
+    print(sorted_residues)
+    for key_type in partial_keysets:
+        tf = [key_type.split('_')[0] + "_" + x for x in ['False', 'True']]
+        if 'inter' in key_type or 'sasa' in key_type:
+            continue
+        print_out('wt key - '+ str(tf))
+        key_false = key_type + '_False'
+        key_true = key_type + '_True'
+        apo = [averages[x][key_false] - wt_data[tf[0]] for x in sorted_residues]
+        apobound[key_false] = apo
+        bound = [averages[x][key_true] - wt_data[tf[1]] for x in sorted_residues]
+        apobound[key_true] = bound
+        title = key_type + " apo vs bound"            
+        make_scatterplot(np.asarray(apo), np.asarray(bound), 'apo REU', 'bound REU', \
+                    title, outdir=args.out_directory, tick_labels=sorted_residues,\
+                    xylimits=[x25,x25], lines=[[x20,x20]])
+    
+    #apobound is normalized data apporpriate to the wt_data
+    major_trans = [apobound['total_T_True'][resi] - apobound['total_C_False'][resi] \
+                for resi in range(0,len(apobound['total_T_True']))]
+    major_cis = [apobound['total_C_True'][resi] - apobound['total_T_False'][resi] \
+                for resi in range(0,len(apobound['total_C_True']))]
+    title = 'Cis vs Trans states-- bound-apo energies'            
+    spaces=' '*10 + 'vs' + ' '*10
+    make_scatterplot(np.asarray(major_trans), np.asarray(major_cis), \
+        'Trans bound' + spaces + 'Cis apo', 'Cis bound' + spaces + 'Trans apo', title, \
+        outdir=args.out_directory, tick_labels=sorted_residues, \
+        xylimits=[x20,x20], lines=[[x20,x0],[x0,x20]])
+    
+    apo = [apobound['total_C_False'][resi] - apobound['total_T_False'][resi] \
+                for resi in range(0,len(apobound['total_C_False']))]
+    bound = [apobound['total_C_True'][resi] - apobound['total_T_True'][resi] \
+                for resi in range(0,len(apobound['total_C_True']))]
+    title = 'Cis minus Trans for apo versus bound states'            
+    make_scatterplot(np.asarray(apo), np.asarray(bound), 'Cis apo' + spaces + 'Trans apo', \
+            'Cis bound' + spaces + 'Trans bound', title, outdir=args.out_directory, \
+            tick_labels=sorted_residues, xylimits=[x20,x20], lines=[[x20,x0]])
+    title = 'Cis minus Trans for apo versus bound states - zoom'            
+    make_scatterplot(np.asarray(apo), np.asarray(bound), 'Cis apo' + spaces + 'Trans apo', \
+            'Cis bound' + spaces + 'Trans bound', title, outdir=args.out_directory, \
+            tick_labels=sorted_residues, xylimits=[x5,x5], lines=[[x5,x0]])
+    
    
 if __name__ == '__main__':
     args = parse_args()

@@ -29,6 +29,7 @@ from pyrosetta.rosetta.core.pack.task.operation import \
 from pyrosetta.rosetta.protocols.grafting.simple_movers import \
     DeleteRegionMover
 from pyrosetta.rosetta.protocols.enzdes import AddOrRemoveMatchCsts
+from pyrosetta.rosetta.protocols.symmetry import SetupForSymmetryMover
 from pyrosetta.rosetta.protocols.relax import FastRelax
 from pyrosetta.rosetta.core.select import get_residues_from_subset
 from pyrosetta.rosetta.core.simple_metrics.metrics import \
@@ -70,8 +71,14 @@ def parse_args():
                         mutants.')
     parser.add_argument('-rem', '--remove_ligand', action='store_true', \
                         default=False, help="Turn on to run without the ligand")
+    parser.add_argument('-cstdeg', '--dihedral_constraint_degrees', type=str, \
+                        default='0,180',required=False, \
+                        help='Set degrees needed for the dihedral\
+                        constraints - REQUIRED if more than 1 angle for dihedral')
     parser.add_argument('-rig_lig', '--rigid_ligand', action='store_true', \
                         default=False, help="Turn on to prevent ligand repacking")
+    parser.add_argument('-sym', '--symmdef_file', type=str, default=False, \
+                        help="Turn on symmetry with the added symmdef file")
     parser.add_argument('-d', '--design', default=False, \
                         help='Input to allow design at a specific radius from')
     parser.add_argument('-ditoms', '--dihedral_constraint_atoms', default=None, \
@@ -255,7 +262,6 @@ def repack_and_minimize_mutant(pose, task_factory, move_map, score_function,  ro
     packer = task_factory.create_task_and_apply_taskoperations(pose)
     print_out("packer task")
     print_out(packer)
-    #sys.exit()
     for rnd in range(rounds):
         print_out("round " + str(rnd+1) + " of repack and min")
         prm.apply(ram_pose)
@@ -278,7 +284,7 @@ def ligand_neighbor_selection(lig, radius, pose, include_ligand=False):
     lig_distant_neighbors = InterGroupInterfaceByVectorSelector()
     lig_distant_neighbors.group1_selector(lig)
     lig_distant_neighbors.group2_selector(not_ligand)
-    lig_distant_neighbors.cb_dist_cut(2.5*rad)
+    lig_distant_neighbors.cb_dist_cut(2.0*rad)
     lig_distant_neighbors.nearby_atom_cut(rad)
 
     lig_contacts = pr.rosetta.core.select.residue_selector.CloseContactResidueSelector()
@@ -316,44 +322,40 @@ def apply_match_constraints(pose, match_cst_file):
     AoRMcsts.cstfile(match_cst_file)
     AoRMcsts.apply(pose)
 
-def get_dihedral(a, b, c, d):
-    #Calculate dihedral from the input xyz coordinates
-    f0 = -1.0 * (np.asarray(b)-np.asarray(a))
-    f1 = np.asarray(c) - np.asarray(b)
-    f2 = np.asarray(d) - np.asarray(c)
-
-    f0xf1 = np.cross(f0, f1)
-    f1xf2 = np.cross(f2, f1)
-
-    f0xf1_x_f1xf2 = np.cross(f0xf1, f1xf2)
-
-    y = np.dot(f0xf1_x_f1xf2, f1) * (1.0/np.linalg.norm(f1))
-    x = np.dot(f0xf1, f1xf2)
-
-    return np.degrees(np.arctan2(y,x))
-
-
 def apply_dihedral_constraint(atom_str_list, residue_index, pose, \
-            degree_iterator=180.0):
+            cst_degrees='0,180'):
     atoms = [] #pr.rosetta.utility.vector1_core_id_AtomID()
     index = get_residues_from_subset(residue_index.apply(pose))
     print(index)
     for atomstr in atom_str_list:
         new_atom = pr.rosetta.core.id.NamedAtomID(atomstr, int(index.back()))
         atoms.append(pr.rosetta.core.pose.named_atom_id_to_atom_id(new_atom, pose))
-    curr_dihedral = get_dihedral(pose.xyz(atoms[0]), pose.xyz(atoms[1]),\
-                pose.xyz(atoms[2]), pose.xyz(atoms[3]))
-    #dihedral_csts = []
     ambiguous = pr.rosetta.core.scoring.constraints.AmbiguousConstraint()
-    for degree_skip in np.arange(curr_dihedral, curr_dihedral + 360.0, \
-                degree_iterator): 
+    for degree_skip in [float(x) for x in cst_degrees.split(',')]: 
         dihedral_func = pr.rosetta.core.scoring.func.CircularHarmonicFunc( \
                 np.radians(degree_skip), np.radians(3.0))
         dihedral_cst = pr.rosetta.core.scoring.constraints.DihedralConstraint(\
                 atoms[0], atoms[1], atoms[2], atoms[3], dihedral_func)
         ambiguous.add_individual_constraint(dihedral_cst)
-    
     pose.add_constraint(ambiguous)
+
+#Repurpose into LINK check.
+def check_residue_against_constraints(pdbfilename, residuenumber):
+    f = open(args.input_pdb, 'r')
+    idx = residuenumber[0:-1]
+    for line in f.readlines():
+        if 'REMARK' in line:
+            items = [x for x in line.split(' ') if x != '']
+            residue_set = [int(items[6]), int(items[11])]
+            print(items)
+            sys.exit()
+            print(residue_set)
+            print(idx)
+            if int(idx) in residue_set:
+                print('The entered residue is a part of the constraints. \
+                        There will be no good coming from this.\
+                        So the script is ending here..')
+                sys.exit()
 
 #Main function starts here.
 ###FUNCTION IDEAS###
@@ -369,7 +371,8 @@ def main(args):
     
 #Adding enzdes constraint file if necessary
     if args.enzdes_constraint_file:
-        init_args = init_args + " -enzdes::cstfile " + str(args.enzdes_constraint_file)
+        init_args = init_args + " -enzdes::cstfile " \
+                    + str(args.enzdes_constraint_file)
 
 #Starting up rosetta with the appropriate params files -
 #-- need both unnatural aa and ligand file to be added (if the ligand isn't a protein).
@@ -382,31 +385,43 @@ def main(args):
     
     sf = pr.rosetta.core.scoring.ScoreFunction()
     sf.add_weights_from_file('ref2015_cst')
+    #Scoring the pose
+    sf(pose)
+    
+    if args.symmdef_file:
+        sfsm = SetupForSymmetryMover(args.symmdef_file)
+        sfsm.apply(pose)
+    #sys.exit()
 
     #Residue selection
     if args.residue_number != '0':
         delta_resi = ResidueIndexSelector(args.residue_number)
+        #check_residue_against_constraints(args.input_pdb, args.residue_number)
+    
+    #Determining if the interacting ligand is a protein or small molecule
+    #and selecting the appropriate residues
     if args.ligand_type == 'protein':
         ligand = ResidueIndexSelector(args.residue_set)
-
     elif args.ligand_type == 'ligand':
-    #3-letter ligand name
         ligand = ResidueNameSelector()
         ligand.set_residue_name3(lig_name)
     
+    #Adding the unnatural at the mutation site
     print_out("Loading Unnatural " + uaa + \
         " onto residue number " + args.residue_number )
     
     if args.residue_number in selector_to_vector(ligand, pose):
         print_out("Selected residue number IS a part of the ligand. Don't do that. \
                 Chosen residue number: " + str(args.residue_number) )
-    #Setting up Mutation
+    #Setting up Mutation function on the correct residue, so long as the
+    #residue isn't #0
     if args.residue_number != '0':
         mutater = pr.rosetta.protocols.simple_moves.MutateResidue()
         mutating_residue = ResidueIndexSelector(args.residue_number)
         mutater.set_selector(mutating_residue)
         mutater.set_res_name(uaa)
         print_out("emd182::loading residue to mutate into: " + str(args.residue_number))
+
 
     lig_vector = selector_to_vector(ligand, pose)
     if args.residue_number != '0':
@@ -420,6 +435,7 @@ def main(args):
     #Build the MoveMap for the mutations.
     move_map = build_move_map(True, True, True)
     
+    #Determining if the ligand should be removed or not
     out_ligand_file = 'yeslig'
     if args.remove_ligand:
         args.rigid_ligand = False
@@ -433,7 +449,6 @@ def main(args):
 
     for struct in range(0,args.nstruct):
         print_out(struct)
-        #load / reload pose 
         mutant_pose = pr.Pose(pose)
         sf(mutant_pose)
         
@@ -490,10 +505,11 @@ def main(args):
         if args.residue_number != '0':
             mutater.apply(mutant_pose)
             if args.dihedral_constraint_atoms:
-                dihedrals = args.dihedral_constraint_atoms.split(';')
-                for dihedral_sets in dihedrals:
-                    apply_dihedral_constraint(dihedral_sets.split(','), \
-                                delta_resi, mutant_pose)
+                dihedral_atoms = args.dihedral_constraint_atoms.split(';')
+                dihedral_values = args.dihedral_constraint_degrees.split(';')
+                for dihedrals in range(len(dihedral_atoms)):
+                    apply_dihedral_constraint(dihedral_atoms[dihedrals].split(','), \
+                                delta_resi, mutant_pose, dihedral_values[dihedrals])
        
         #turn on match constraints if needed:
         if args.enzdes_constraint_file:
