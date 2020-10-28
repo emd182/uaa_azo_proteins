@@ -11,7 +11,8 @@
 import pyrosetta as pr
 import argparse
 import sys
-from os.path import isdir, join
+import stat
+from os.path import isdir, join, exists, isfile
 from os import makedirs
 import numpy as np
 from pyrosetta.rosetta.protocols.constraint_generator import \
@@ -141,7 +142,7 @@ def coord_constrain_pose(pose):
 def task_factory_builder(repacking_residues='all', designing_residues=None, \
         extra_rotamers=[1,2]):
     #Setting this up for now, need to implement these conditions:
-        #Repackable set, Designable Set, prevent ligand repacking
+    #Repackable set, Designable Set, prevent ligand repacking
     #Building a Task Factory for repacking/design around the neighbors residues 
     #Task factory builder should accept: repackable residues, designable
     #residues, specifically preventing repacking residues, and prevent the rest.
@@ -156,7 +157,8 @@ def task_factory_builder(repacking_residues='all', designing_residues=None, \
     if extra_rotamers:
         for x in extra_rotamers:
             tf.push_back(ExtraRotamers(0, x, 1))    
-    
+    print(repacking_residues)
+
     #Set up repack and prevent repack
     repack = RestrictToRepackingRLT()
     prevent = PreventRepackingRLT()
@@ -175,8 +177,14 @@ def task_factory_builder(repacking_residues='all', designing_residues=None, \
     if designing_residues:
         residues_for_design = ResidueIndexSelector(designing_residues)
         changing_residues.add_residue_selector(residues_for_design)
-    
+    #virtual = ResidueNameSelector('VRT')
+    #not_virt = NotResidueSelector(virtual)
+    #not_virt_and_change = AndResidueSelector()
+    #not_virt_and_change.add_residue_selector(not_virt)
+    #not_virt_and_change.add_residue_selector(changing_residues)
+
     prevent_everything_else.set_residue_selector(changing_residues)
+    #prevent_everything_else.set_residue_selector(not_virt_and_change)
 
     if repack == 'all':
         tf.push_back(OperateOnResidueSubset(repack, prevent_everything_else))
@@ -221,8 +229,9 @@ def fast_relax_mutant(pose, task_factory, move_map, score_function, decoys=1):
     fast_relax.set_movemap(move_map)
     score_function(pose)
     packer = task_factory.create_task_and_apply_taskoperations(pose)
-    #print_out("packer task")
-    #print_out(packer)
+    print_out("packer task")
+    print_out(packer)
+    #sys.exit()
     traj_idx = 0 
     lowest_energy = 1000.0
     print_out("emd182::Running Fast Relax")
@@ -231,7 +240,6 @@ def fast_relax_mutant(pose, task_factory, move_map, score_function, decoys=1):
         pose_copy = pr.Pose()
         pose_copy.assign(pose)
         print_out("emd182:: pose total residues: " + str(pose.total_residue()) )
-        print_out("emd182:: pose total residues: " + str(pose_copy.total_residue()) )
         fast_relax.apply(pose_copy)
         decoy_energy = total_energy(pose_copy, score_function)
         if traj_idx == '0':
@@ -266,7 +274,6 @@ def repack_and_minimize_mutant(pose, task_factory, move_map, score_function,  ro
         print_out("round " + str(rnd+1) + " of repack and min")
         prm.apply(ram_pose)
         min_mover.apply(ram_pose)
-    
     return ram_pose
 
 def residue_selection(selection_one, selection_two):
@@ -339,28 +346,94 @@ def apply_dihedral_constraint(atom_str_list, residue_index, pose, \
         ambiguous.add_individual_constraint(dihedral_cst)
     pose.add_constraint(ambiguous)
 
-#Repurpose into LINK check.
-def check_residue_against_constraints(pdbfilename, residuenumber):
-    f = open(args.input_pdb, 'r')
-    idx = residuenumber[0:-1]
+def write_to_file(file_name, new_file_contents):
+    #Testing file existance
+    same = False
+    if exists(file_name):
+        same = True
+        print_out("file exists, comparing two files")
+        f = open(file_name, 'r')
+        if len(new_file_contents) != len(f.readlines()):
+            same = False
+        else:
+            for a, b in zip(new_file_contents, f.readlines()):
+                if a != b:
+                    same = False
+                    break
+        f.close()
+
+    if not same:
+        print_out("not the same!")
+        new_f = open(file_name, 'w')
+        for line in new_file_contents:
+            new_f.write(line)
+        print_out("Wrote the file " + file_name)
+        new_f.close()
+        return
+    else:
+        print_out("Identical file, continue")
+        return
+
+#Repurpose into CST check and remove - both in PDB and cst file.
+def enzdes_constraint_eliminator(pdbfilename, enzdes_constraint_file, ligand):
+    if 'params' in ligand:
+        ligand = [ligand.split('/')[-1].replace('.params','')]
+    else:
+        ligand = [x for x in ligand.split(',')]
+
+    f = open(pdbfilename, 'r')
+    cleaned_pdb = []
+    keep_constraints = []
     for line in f.readlines():
         if 'REMARK' in line:
+            keep_remark = True
             items = [x for x in line.split(' ') if x != '']
-            residue_set = [int(items[6]), int(items[11])]
-            print(items)
-            sys.exit()
-            print(residue_set)
-            print(idx)
-            if int(idx) in residue_set:
-                print('The entered residue is a part of the constraints. \
-                        There will be no good coming from this.\
-                        So the script is ending here..')
-                sys.exit()
+            resi_set = [str(int(items[6])) + items[4],str(int(items[11])) + items[9]]
+            resn_set = [items[5],items[10]]
+            for lig in ligand:
+                if lig in resi_set or lig in resn_set:
+                    keep_remark = False
+            if keep_remark:
+                keep_constraints.append(int(items[12]))
+                cleaned_pdb.append(line)
+        else:
+            cleaned_pdb.append(line)
+    f.close()
 
+    cst = open(enzdes_constraint_file, 'r')
+    cst_dict = {}
+    block_count = 0
+    for line in cst.readlines():
+        if 'CST::BEGIN' in line:
+            block_count += 1
+            cst_dict[block_count] = [line]
+        else:
+            cst_dict[block_count].append(line)
+    cst.close()
+    keep_constraints = sorted(keep_constraints)
+    cleaned_cst = []
+    for cst_block_item in keep_constraints:
+        for line in cst_dict[cst_block_item]:
+            cleaned_cst.append(line)
+
+    clean_pdb_name = pdbfilename.replace('.pdb', '') + '_noligcst.pdb'
+    clean_cst_name = enzdes_constraint_file.replace('.cst','') + '_noligcst.cst'
+    write_to_file(clean_pdb_name, cleaned_pdb)
+    write_to_file(clean_cst_name, cleaned_cst)
+    return clean_pdb_name, clean_cst_name
+            
 #Main function starts here.
 ###FUNCTION IDEAS###
 def main(args):
     
+    #Determining if the ligand should be removed or not
+    #Need to be moved here as checking if the lig remains is
+    #Imperative for how the CST file is dealt with.
+    out_ligand_file = 'yeslig'
+    if args.remove_ligand:
+        args.rigid_ligand = False
+        out_ligand_file = 'nolig'
+     
     params = [args.unnatural]
     uaa = params[0].split('/')[-1].strip(".params")
     if args.ligand_type == 'ligand':
@@ -369,10 +442,17 @@ def main(args):
     
     init_args = ' '.join(['-run:preserve_header','-extra_res_fa'] + params)
     
-#Adding enzdes constraint file if necessary
+#Adding enzdes constraint file - and editing it - if necessary
     if args.enzdes_constraint_file:
-        init_args = init_args + " -enzdes::cstfile " \
-                    + str(args.enzdes_constraint_file)
+        if out_ligand_file == 'nolig':
+            if args.ligand_type == 'protein':
+                lig_search = args.residue_set    
+            elif args.ligand_type == 'ligand':
+                lig_search = args.ligand_name    
+            args.input_pdb, args.enzdes_constraint_file = enzdes_constraint_eliminator(\
+                    args.input_pdb, args.enzdes_constraint_file, ligand=lig_search )    
+        
+        #init_args = init_args + " -enzdes::cstfile " + str(args.enzdes_constraint_file)
 
 #Starting up rosetta with the appropriate params files -
 #-- need both unnatural aa and ligand file to be added (if the ligand isn't a protein).
@@ -383,20 +463,9 @@ def main(args):
     
     pose = pr.pose_from_pdb(args.input_pdb)
     
-    sf = pr.rosetta.core.scoring.ScoreFunction()
-    sf.add_weights_from_file('ref2015_cst')
-    #Scoring the pose
-    sf(pose)
-    
-    if args.symmdef_file:
-        sfsm = SetupForSymmetryMover(args.symmdef_file)
-        sfsm.apply(pose)
-    #sys.exit()
-
     #Residue selection
     if args.residue_number != '0':
         delta_resi = ResidueIndexSelector(args.residue_number)
-        #check_residue_against_constraints(args.input_pdb, args.residue_number)
     
     #Determining if the interacting ligand is a protein or small molecule
     #and selecting the appropriate residues
@@ -431,16 +500,7 @@ def main(args):
                     + str(lig_vector))
             print_out("Exiting the python script")
             sys.exit()
-
-    #Build the MoveMap for the mutations.
-    move_map = build_move_map(True, True, True)
     
-    #Determining if the ligand should be removed or not
-    out_ligand_file = 'yeslig'
-    if args.remove_ligand:
-        args.rigid_ligand = False
-        out_ligand_file = 'nolig'
-
     print_out("emd182::Start mutations and relaxation script " \
         + str(args.nstruct) + " times.")
     
@@ -450,12 +510,50 @@ def main(args):
     for struct in range(0,args.nstruct):
         print_out(struct)
         mutant_pose = pr.Pose(pose)
+        #Residue selection
+        if args.residue_number != '0':
+            delta_resi = ResidueIndexSelector(args.residue_number)
+        
+        #apply mutation
+        if args.residue_number != '0':
+            mutater.apply(mutant_pose)
+            if args.dihedral_constraint_atoms:
+                dihedral_atoms = args.dihedral_constraint_atoms.split(';')
+                dihedral_values = args.dihedral_constraint_degrees.split(';')
+                for dihedrals in range(len(dihedral_atoms)):
+                    apply_dihedral_constraint(dihedral_atoms[dihedrals].split(','), \
+                                delta_resi, mutant_pose, dihedral_values[dihedrals])
+        
+        move_map = build_move_map(True, True, True)
+
+        #Scoring the pose
+        sf = pr.rosetta.core.scoring.ScoreFunction()
+        if args.symmdef_file:
+            sfsm = SetupForSymmetryMover(args.symmdef_file)
+            sfsm.apply(mutant_pose)
+            sf = pr.rosetta.core.scoring.symmetry.SymmetricScoreFunction()
+            sf.add_weights_from_file('ref2015_cst')
+        else:
+            sf = pr.rosetta.core.scoring.ScoreFunction()
+        sf.add_weights_from_file('ref2015_cst')
+        
         sf(mutant_pose)
+        
+        #apply mutation
+        if args.residue_number != '0':
+            mutater.apply(mutant_pose)
+            if args.dihedral_constraint_atoms:
+                dihedral_atoms = args.dihedral_constraint_atoms.split(';')
+                dihedral_values = args.dihedral_constraint_degrees.split(';')
+                for dihedrals in range(len(dihedral_atoms)):
+                    apply_dihedral_constraint(dihedral_atoms[dihedrals].split(','), \
+                                delta_resi, mutant_pose, dihedral_values[dihedrals])
         
         #Making appropriate residue selections base on if the ligand will be
         #Removed or not, as well as if the ligand is rigid or not.
         residues_around_ligand = ligand_neighbor_selection(ligand, args.radius, \
                 mutant_pose, bool(args.rigid_ligand) )
+        
         if args.residue_number != '0':
             residues_around_mutant = ligand_neighbor_selection(mutating_residue, \
                     args.radius, mutant_pose, True)
@@ -489,27 +587,26 @@ def main(args):
                         repacking_resids.remove(res)
         
         #If the remove-ligand is called, will remove the ligand from the mutant pose
+        #Change 'remove-ligand' to 'translate region - makes for 
         if args.remove_ligand:
             removing_resids = selector_to_vector(ligand, mutant_pose)
-            for res in removing_resids:
-                if res in repacking_resids:
-                    repacking_resids.remove(res)
-            remove_lig = DeleteRegionMover()
-            remove_lig.set_residue_selector(ligand)
-            remove_lig.apply(mutant_pose)
-            
+            #for res in removing_resids:
+            #    if res in repacking_resids:
+            #        repacking_resids.remove(res)
+            trans_vec = pr.rosetta.numeric.xyzVector_double_t( 0.0, 0.0, 1000.0)
+            trans = pr.rosetta.protocols.rigid.RigidBodyTransMover( trans_vec )
+            jump_id = pr.rosetta.core.pose.get_jump_id_from_chain( 'B', mutant_pose)
+            trans.rb_jump( jump_id )
+            trans.step_size( 500.0 )
+            trans.apply(mutant_pose)
+            #remove_lig = DeleteRegionMover()
+            #remove_lig.set_residue_selector(ligand)
+            #remove_lig.apply(mutant_pose)
+        
         tf = task_factory_builder(repacking_residues=repacking_resids, \
                 designing_residues=design_around_mutant)
         
-        #apply mutation
-        if args.residue_number != '0':
-            mutater.apply(mutant_pose)
-            if args.dihedral_constraint_atoms:
-                dihedral_atoms = args.dihedral_constraint_atoms.split(';')
-                dihedral_values = args.dihedral_constraint_degrees.split(';')
-                for dihedrals in range(len(dihedral_atoms)):
-                    apply_dihedral_constraint(dihedral_atoms[dihedrals].split(','), \
-                                delta_resi, mutant_pose, dihedral_values[dihedrals])
+        move_map = build_move_map(True, True, True)
        
         #turn on match constraints if needed:
         if args.enzdes_constraint_file:
@@ -534,7 +631,7 @@ def main(args):
         #output the name of the file
         #Includes original pdb namne, residue number and uaa, nstruct number,
         #and if the ligand is included or not.
-        base_pdb_filename = args.input_pdb.split('/')[-1].strip(".pdb")
+        base_pdb_filename = args.input_pdb.split('/')[-1].split('_')[0].replace('.pdb','')
         outname = '{}_{}_{}_{}_{}.pdb'.format(base_pdb_filename, \
                 args.residue_number, uaa, out_ligand_file, str(struct))
         if args.residue_number == '0':
