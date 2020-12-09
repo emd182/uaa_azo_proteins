@@ -680,9 +680,10 @@ def main(args):
     print(sorted_cstkeys)
     print(len(sorted_cstkeys))
 
-    x20=[-20,20]
-    x25=[-5,20]
-    x5=[-5,5]
+    x20=[-25,25]
+    x20=[-50,50]
+    x25=[-15,50]
+    x5=[-15,15]
     x0=[0,0]
     apobound = {}
     print(sorted_residues)

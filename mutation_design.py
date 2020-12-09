@@ -70,8 +70,11 @@ def parse_args():
     parser.add_argument('-uaa', '--unnatural', type=str, required=True,
                         help='The Unnatural amino acid params file for point \
                         mutants.')
-    parser.add_argument('-rem', '--remove_ligand', action='store_true', \
-                        default=False, help="Turn on to run without the ligand")
+    parser.add_argument('-rem', '--remove_ligand', type=str, default=None, \
+                        help="Turn on to run without the ligand. Must set \
+                        the chain that is being removed. Set comma delimited\
+                        set of chains if more than one chain is to be moved,\
+                        as in the case of a heterodimer.")
     parser.add_argument('-cstdeg', '--dihedral_constraint_degrees', type=str, \
                         default='0,180',required=False, \
                         help='Set degrees needed for the dihedral\
@@ -177,14 +180,8 @@ def task_factory_builder(repacking_residues='all', designing_residues=None, \
     if designing_residues:
         residues_for_design = ResidueIndexSelector(designing_residues)
         changing_residues.add_residue_selector(residues_for_design)
-    #virtual = ResidueNameSelector('VRT')
-    #not_virt = NotResidueSelector(virtual)
-    #not_virt_and_change = AndResidueSelector()
-    #not_virt_and_change.add_residue_selector(not_virt)
-    #not_virt_and_change.add_residue_selector(changing_residues)
 
     prevent_everything_else.set_residue_selector(changing_residues)
-    #prevent_everything_else.set_residue_selector(not_virt_and_change)
 
     if repack == 'all':
         tf.push_back(OperateOnResidueSubset(repack, prevent_everything_else))
@@ -421,7 +418,31 @@ def enzdes_constraint_eliminator(pdbfilename, enzdes_constraint_file, ligand):
     write_to_file(clean_pdb_name, cleaned_pdb)
     write_to_file(clean_cst_name, cleaned_cst)
     return clean_pdb_name, clean_cst_name
-            
+
+def a_random_3d_vector():
+    xyz = np.random.rand(3)
+    return [unit/np.linalg.norm(xyz) for unit in xyz]
+
+def random_direction_selector(prev_xyz):
+    """ Selects another random direction away from previous directions. """
+    if prev_xyz:
+        mindist = 0.0
+        counter = 0
+        while mindist < 1.0:
+            counter += 1
+            dists = []
+            new_xyz = a_random_3d_vector()
+            for xyz in prev_xyz:
+                dists.append(np.linalg.norm(xyz - new_xyz))
+            mindist = min(dists)       
+            if counter > 1000:
+                print("Something went really wrong. Has something to do with\
+                        the random_direction_selector function.")
+                sys.exit()
+        return new_xyz
+    else:
+        return a_random_3d_vector()
+    
 #Main function starts here.
 ###FUNCTION IDEAS###
 def main(args):
@@ -529,6 +550,14 @@ def main(args):
         #Scoring the pose
         sf = pr.rosetta.core.scoring.ScoreFunction()
         if args.symmdef_file:
+            #Setting a residueindexselector to eliminate all extra aa post design
+            pre_symm_ris = ResidueIndexSelector()
+            all_aa = []
+            for i in range(1, mutant_pose.total_residue() + 1):
+                all_aa.append(''.join(mutant_pose.pdb_info().pose2pdb(i).split()))
+            pre_symm_ris.set_index(','.join(all_aa))
+            #sys.exit()
+            #Symmetrizing
             sfsm = SetupForSymmetryMover(args.symmdef_file)
             sfsm.apply(mutant_pose)
             sf = pr.rosetta.core.scoring.symmetry.SymmetricScoreFunction()
@@ -589,19 +618,16 @@ def main(args):
         #If the remove-ligand is called, will remove the ligand from the mutant pose
         #Change 'remove-ligand' to 'translate region - makes for 
         if args.remove_ligand:
-            removing_resids = selector_to_vector(ligand, mutant_pose)
-            #for res in removing_resids:
-            #    if res in repacking_resids:
-            #        repacking_resids.remove(res)
-            trans_vec = pr.rosetta.numeric.xyzVector_double_t( 0.0, 0.0, 1000.0)
-            trans = pr.rosetta.protocols.rigid.RigidBodyTransMover( trans_vec )
-            jump_id = pr.rosetta.core.pose.get_jump_id_from_chain( 'B', mutant_pose)
-            trans.rb_jump( jump_id )
-            trans.step_size( 500.0 )
-            trans.apply(mutant_pose)
-            #remove_lig = DeleteRegionMover()
-            #remove_lig.set_residue_selector(ligand)
-            #remove_lig.apply(mutant_pose)
+            used_xyzs = []
+            for chain in args.remove_ligand.split(','):
+                x,y,z = random_direction_selector(used_xyzs) 
+                used_xyzs.append(np.array([x,y,z]))
+                trans_vec = pr.rosetta.numeric.xyzVector_double_t( x, y, z)
+                trans = pr.rosetta.protocols.rigid.RigidBodyTransMover( trans_vec )
+                jump_id = pr.rosetta.core.pose.get_jump_id_from_chain( chain, mutant_pose)
+                trans.rb_jump( jump_id )
+                trans.step_size( 500.0 )
+                trans.apply(mutant_pose)
         
         tf = task_factory_builder(repacking_residues=repacking_resids, \
                 designing_residues=design_around_mutant)
@@ -638,14 +664,27 @@ def main(args):
             outname = '{}_{}_min.pdb'.format(base_pdb_filename, \
                     out_ligand_file)
         if args.out_suffix:
-            outname = outname.strip(".pdb") + args.out_suffix + ".pdb"
+            outname = outname.replace(".pdb",args.out_suffix + ".pdb")
         print_out("Outputting protein file as : " + outname )
 
         out_dir = out_directory(args.out_directory)
         outname = '/'.join([out_dir, outname])
         print_out("Writing Outputting protein file as : " + outname )
         
-        new_pose.dump_pdb(outname)
+        #Symmetry needs to be broken to load the proteins in another
+        #script to analyze them symmetrically.
+        if args.symmdef_file:
+            full_out = outname.replace('.pdb','sym.pdb')
+            new_pose.dump_pdb(full_out)
+            not_symm = NotResidueSelector(pre_symm_ris)
+            remove_symmetrized_aa = DeleteRegionMover()
+            remove_symmetrized_aa.set_residue_selector(not_symm)
+            remove_symmetrized_aa.apply(new_pose)
+            new_pose.dump_pdb(outname)
+        else:
+            new_pose.dump_pdb(outname)
+
+
 
 if __name__ == '__main__':
     args = parse_args()

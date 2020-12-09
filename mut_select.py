@@ -145,7 +145,7 @@ def main(args):
     residue_final_set = []
     for resi in pdb_residues:
         idx = int(resi[0:-1])
-        if idx not in remove_set and resi[-1] == 'A':
+        if idx not in remove_set:
             residue_final_set.append(resi)
     #Final list for the designable residues
     residue_final_set.append('0')
