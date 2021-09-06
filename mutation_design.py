@@ -1,9 +1,5 @@
 # This script is for taking a selected residue and mutating it to a selection of residues around a ligand for mutation and design.
 # Editor: Elliott Dolan, Khare Lab, Rutgers University, 2020
-'''
-   Usage:
-         python step14_mutation.py <number after 'UM_' in the file name> <residue number to be mutated> <model number right before '.pdb' in the file name>
-'''
 
 #!/usr/bin/python
 
@@ -401,6 +397,7 @@ def enzdes_constraint_eliminator(pdbfilename, enzdes_constraint_file, ligand):
     cst_dict = {}
     block_count = 0
     for line in cst.readlines():
+        print(line)
         if 'CST::BEGIN' in line:
             block_count += 1
             cst_dict[block_count] = [line]

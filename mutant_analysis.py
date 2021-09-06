@@ -8,10 +8,12 @@
 import pyrosetta as pr
 import multiprocessing as mp
 import matplotlib.pyplot as plt
+from matplotlib.axis import Axis
 import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
 import sys, os, itertools, ntpath, math, argparse, pickle
+from shutil import copyfile
 from glob import glob
 from pyrosetta.rosetta.protocols.constraint_generator import \
     AddConstraints, CoordinateConstraintGenerator
@@ -70,7 +72,7 @@ def parse_args():
                         help='Ligand params file for ligand identification. \
                         Ligand params file should have a 3 letter name with \
                         the same 3 letters for the lig name.')
-    parser.add_argument('-uaa', '--unnatural', action='store_true', required=False,
+    parser.add_argument('-uaa', '--unnatural', type=str, required=True,
                         help='Stating if unnaturals are used - will require params files')
     parser.add_argument('-enz', '--enzdes_cstfiles', type=str, required=False,
                         help='Add for implementation of constraints used in the \
@@ -80,17 +82,15 @@ def parse_args():
                         help='Add to consider symmetry for these proteins - \
                         needed by first removing first chains and then re-symmetrizing\
                         the protein.')
-    parser.add_argument('-cis', '--cis_params_file', type=str, \
-                        required=any(x in ['--uaa', '--unnatural'] for x in sys.argv), \
+    parser.add_argument('-cis', '--cis_params_file', type=str, required=True, \
                         help='Cis state params files for unnatural amino acid inclusions')
-    parser.add_argument('-trans', '--trans_params_file', type=str, \
-                        required=any(x in ['--uaa', '--unnatural'] for x in sys.argv),\
+    parser.add_argument('-trans', '--trans_params_file', type=str, required=True, \
                         help='Trans state params files for unnatural amino acid inclusions')
     parser.add_argument('-pkl', '--pickled_file', type=str, required=False, \
                         default=None, help="Load data saved from a single previous run.")
     parser.add_argument('-pkls', '--pickled_directory', type=str, required=False, \
                         default=None, help="Load data saved from multiple runs.")
-    parser.add_argument('-per', '--per_resi_graph', action='store_true', default=False, \
+    parser.add_argument('-per', '--per_resi_graph', type=str, default='',\
                         help="Make graphs for each residue for all proteins.")
     parser.add_argument('-filt','--filter', action='store_true', default=False, \
                         help='Call --filter to begin filtering the proteins.')
@@ -216,13 +216,14 @@ class single_mutant_analysis():
         self.mutated_residues = {}
         self.calculate_sequence()
         
+        #Note: Must apply match constraints AFTER symmetrization.
         if self.symmetry:
             self.symmetric = False
             self.apply_symmetry()
 
         if self.cst_file:
             self.apply_match_constraints()
-        
+
         self.calculate_energies()
         
         self.energies = {'total_energy': self.total_energy,\
@@ -235,16 +236,17 @@ class single_mutant_analysis():
                          'delta_per_res_cstE': self.delta_per_res_cstE, \
                          'resi_order':self.resi_order }
 
+
     def apply_match_constraints(self):
         """
         Simply adds loaded constraints to the pose and wt pose.
         """
         AoRMcsts = AddOrRemoveMatchCsts()
         AoRMcsts.set_cst_action(pr.rosetta.protocols.enzdes.CstAction.ADD_NEW)
-        print(self.pdb_name)
         AoRMcsts.cstfile(self.cst_file)
         AoRMcsts.apply(self.mutant)
         AoRMcsts.apply(self.wt)
+        print('***Applied Constraints***')
     
     def apply_symmetry(self):
         """
@@ -259,7 +261,8 @@ class single_mutant_analysis():
         if self.wt is not None:
             pr.rosetta.core.pose.symmetry.make_symmetric_pose(self.wt, self.symmetry)
             assert pr.rosetta.core.pose.symmetry.is_symmetric(self.mutant) == True, \
-                "Wildtype pose for "+ self.pdb_name + " is not symmetric - Test 1"
+                "Wildtype pose for "+ self.pdb_name + " is not symmetric - Test 2"
+        print('***Applied Symmetry***')
     
     def calculate_sequence(self):
         """
@@ -284,6 +287,7 @@ class single_mutant_analysis():
             if final_aa != orig_aa:
                 pdb_number = self.wt.pdb_info().pose2pdb(i).split()[0]
                 self.mutated_residues[pdb_number] = [orig_aa, final_aa]
+        print('***Checked Sequence***')
 
     def calculate_energies(self):
         """
@@ -306,6 +310,7 @@ class single_mutant_analysis():
 
         #Now determine the constraint component of the poses
         if self.cst_file is not None:
+
             cst_only_sf = pr.rosetta.core.scoring.ScoreFunction()
             self.set_constraint_scores_to_x(cst_only_sf, 1.0)
             tem.set_scorefunction(cst_only_sf)
@@ -316,6 +321,7 @@ class single_mutant_analysis():
                 self.delta_cstE = self.cstE - tem.calculate(self.wt)
                 self.delta_per_res_cstE = self.calculate_delta_per_res_energies( \
                                 self.per_res_total_cstE, cst_only_sf)
+        print('***Energies Calculated***')
         
     def calculate_per_res_energies(self, curr_pose, score_function):
         """ Calculate energies on a per-residue basis """
@@ -430,8 +436,8 @@ def single_E_set_calc(frame_part, min_max_avg='min', sele_E='total_energy', \
     totals = {}
     keys = [x for x in frame_part.keys()]
     testkey = keys[np.random.randint(len(keys))]
-    assert sele_E in frame_part[testkey].keys() and\
-            'per' not in sele_E, "Select an appropriate key"
+    assert sele_E in frame_part[testkey].keys() and "per" not in sele_E, \
+                "Select an appropriate key"
     
     for pdbid, item in frame_part.items():
         if type(item) == list:
@@ -489,7 +495,7 @@ def return_per_res_data(frame_part, min_max_avg='min', sele_E='per_res_total_E',
         return frame_part[pdbkey][sele_E], pdbkey 
     
     energy_set, key = single_E_set_calc(frame_part, min_max_avg, \
-                                            corresponding_sets[sele_E])
+                                        corresponding_sets[sele_E])
 
     return frame_part[key][sele_E], key 
 
@@ -561,7 +567,7 @@ def dataframe_extract(mut_rows, mma, datatypes, columns=['residue','point_mutant
                 extract[mut_key], extract[top_key] = return_per_res_data( \
                         mut_rows[columns[1]][idx], min_max_avg=mma, sele_E=datatypes)
 
-    print("Analyzed Set: " + str(datatypes))
+    #print("Analyzed Set: " + str(datatypes))
     sorted_labels = sorted([key for key in extract.keys() if '_' not in key],\
             key=lambda x: float(x[:-1]))
     out_data = [extract[key] for key in sorted_labels] 
@@ -700,14 +706,10 @@ def plot_res_ddg(ref_data, mut_data, titlen=None, filen=None):
         plt.savefig(filen)
         print_out("Making graph for: " + filen)
     else: plt.show()
-    plt.close()
 
-def make_per_residue_graphs(frame, out_dir, cst_add=False):
-    """
-    Takes a dataframe of individual proteins, and makes per residue graphs
-    for every model, saved with the residues name. 
-            delta_per_res_dict[key] = mut_per_res[key] - wt_per_res[key]
-    """
+def plot_all_per_res_ddgs(frame, out_dir):
+    ##Graphs all per_res_ddgs for an input frame.
+    ## a function for the make_per_residue_graphs function
     for row, data in frame.iterrows():
         per_res_dir = '/'.join([out_dir,'per_res_'+data['residue']])
         out_directory(per_res_dir) 
@@ -720,10 +722,7 @@ def make_per_residue_graphs(frame, out_dir, cst_add=False):
             total_Es = np.array([pdb_dict['per_res_total_E'][key] for key in keysort])
             delt_Es = np.array([pdb_dict['delta_per_res_E'][key] for key in keysort])
             wt_total_Es = total_Es - delt_Es
-            if cst_add and pdb_dict['cstE'] != 0.0:
-                print("Constraint energies != 0")
-                print(pdb_dict['cstE'])
-                print("Printing graphs with constraint energies added")
+            if pdb_dict['cstE'] != 0.0:
                 title = title + ' with csts'
                 filename = filename + '_csts'
                 cstEs = np.array([pdb_dict['per_res_total_cstE'][k] for k in keysort])
@@ -732,18 +731,119 @@ def make_per_residue_graphs(frame, out_dir, cst_add=False):
                 wt_total_Es = total_Es - delt_cstEs - delt_Es
             out_file = per_res_dir + '/' + filename + '.png'
             plot_res_ddg(wt_total_Es, total_Es, titlen=title, filen=out_file)
+
+def plot_quadrant_ddgs(quad_dict, min_file_dict, title, out_dir):
+    # Plotting a combination of 4 graphs:
+    fig, axes = plt.subplots(4, 1, sharex=True)
+    first = ['boundcis', 'apocis', 'apocis', 'apotrans']
+    second = ['boundtrans', 'apotrans', 'boundcis', 'boundtrans']
+    labels = ['Bound: cis-trans', 'Apo: cis-trans', 'Cis: apo-bound', 'Trans: apo-bound']
+    plot_count = 0
+    for f_, s_ in zip(first, second):
+        f_vals = np.array([scores for residues, scores in quad_dict[f_].items()]) 
+        s_vals = np.array([scores for residues, scores in quad_dict[s_].items()]) 
+        axes[plot_count].plot(f_vals-s_vals, linewidth=0.3, color='black')
+        axes[plot_count].set_ylabel(labels[plot_count], fontsize=9)
+        plot_count = plot_count + 1
+    len_keys = len(quad_dict[first[0]].keys())
+    ticks = [tick for tick in range(len_keys)]
+    labels = [label[:-1] for label in quad_dict[first[0]].keys()]
+    tick_spacing = round(len_keys / 19)
+    plt.xticks(ticks[::tick_spacing], labels[::tick_spacing], fontsize=7, rotation='vertical')
+        
+    # Format Figure
+    fig.set_size_inches(5.0, 8.0)
+    fig.set_dpi(300)
+    bottom, top, left, right = [0.05, 0.95, 0.1, 1]
+    vcenter = bottom + ( top - bottom ) /2
+    hcenter = left + ( right - left ) /2
+
+    fig.tight_layout()
+    fig.subplots_adjust(top=top, bottom=bottom, left=left, right=right)
+
+#Label axes
+    fig.text(0.001, vcenter, 'Delta REUs', fontsize=12, rotation='vertical', \
+                ha='left', va='center')
+    fig.text(hcenter, 0.001, 'Residue Number', fontsize=12, ha='center', va='bottom')
+    fig.text(hcenter, 0.999, title, fontsize=10, ha='center', va='top')
+    
+    filen = out_dir + '/' + title.replace(' ', '_') + '.png'
+    plt.savefig(filen)
+    print_out("Making graph for: " + filen)
+    plt.close()
+
+def per_residue_quadrant_grapher(frame, out_dir, per_type, comparisons):
+    for resi in frame.residue.unique():
+        per_res_dir = '/'.join([out_dir,'per_res_'+resi])
+        out_directory(per_res_dir) 
+        per_resi_set = {}
+        minimum_set = {}
+        for sub_iso, group in comparisons.items():
+            sub_iso_resi = row_select_from_column_filters(frame, group + [resi])
+            out_data, tick_names, top_model = dataframe_extract( sub_iso_resi,\
+                    per_type, 'per_res_total_E')
+            per_resi_set[sub_iso] = out_data[0]
+            minimum_set[sub_iso] = top_model[resi+'_top']
+        title = 'Apo-Holo and Cis-Trans per-residue graphs for residue '+ resi 
+        plot_quadrant_ddgs(per_resi_set, minimum_set, title, per_res_dir)
+
+
+def make_per_residue_graphs(frame, out_dir, per_type='all', comparisons='delta'):
+    """
+    Takes a dataframe of individual proteins, and makes per residue graphs
+    for every model, saved with the residues name. 
+            delta_per_res_dict[key] = mut_per_res[key] - wt_per_res[key]
+    """
+    if per_type == 'all':
+        plot_all_per_res_ddgs(frame, out_dir)
+    
+    elif per_type =='min':
+        per_residue_quadrant_grapher(frame, out_dir, per_type, comparisons)
+
+    else:
+        print("Entered wrong entry for the --per_resi_graphs argument. avg is still under \
+            construction. Please restart with proper arguments.")
+        sys.exit()
+
+#def dataframe_extract(mut_rows, mma, datatypes, columns=['residue','point_mutant_set']):
             #sys.exit()
+
+def copy_to_results_folders(csv_dict, avg_min, analysis_directory):
+    """Copy pdbs mentioned in out csv to the respective folders for easy access"""
+    print('copy results function')
+    for key in csv_dict.keys():
+        pdb_name = csv_dict[key][0].split('/')[-1]
+        dir_name = '/'.join(csv_dict[key][0].split('/')[:-1])
+        resi_key = key.split('_')[0]
+        out_dir = '/'.join([analysis_directory,'_'.join([resi_key,avg_min])])
+        out_directory(out_dir)
+        if os.path.exists(dir_name+'/syms'):
+            sympdb = pdb_name.replace('.pdb','sym.pdb')
+            moving_filename = dir_name + '/syms/' + sympdb
+            out_file = '/'.join([out_dir, sympdb])
+        else:
+            moving_filename = csv_dict[key][0]
+            out_file = '/'.join([out_dir,pdb_name])
+        print('Moving file name: ' + csv_dict[key][0])
+        print('to this location: ' + out_file)
+        copyfile(moving_filename, out_file)
 
 """
 ##############################################################################
 Making Bar Plots
 ##############################################################################
 """
+def out_filename_prep(title):
+    #Prepares a title to make it useful as a filename
+    print(title)
+    print(type(title))
+    replace_newline = title.replace('\n','')
+    newtitle = replace_newline.replace(' ','_')
+    return newtitle.replace('=','_')
 
 def make_bar_plot(bar_values, bar_labels, xlabel, ylabel, title, csv_out=None, \
             ymax=10.0, ymin=-10.0, control=0.0, out_dir='./',\
-            legend_info={'blue':'normalized score'}):
-    
+            legend_info={'blue':'normalized score'}, min_max_avg=''):
     normal = np.array(bar_values) - control
     x = np.asarray(list(range(len(normal))))
     legends = []
@@ -759,13 +859,16 @@ def make_bar_plot(bar_values, bar_labels, xlabel, ylabel, title, csv_out=None, \
     fig = plt.gcf()
     plt.show()
     out_directory(out_dir)
-    out_file ='/'.join([ out_dir, title.replace(' ', '_') +'.png'])
+    out_file ='/'.join([ out_dir, out_filename_prep(title) +'.png'])
+    #out_filename_prep(title)
     if csv_out:
         frame = pd.DataFrame(csv_out)
         csv_dir = '/'.join([out_dir, 'csv_dir'])
         out_directory(csv_dir)
         csv_file ='/'.join([csv_dir, title.replace(' ', '_') +'.csv'])
         frame.to_csv(csv_file)
+        copy_to_results_folders(csv_out, min_max_avg, out_dir) 
+
     fig.savefig(out_file, dpi=150, bbox_inches='tight')
     plt.close('all')
     print_out("Writing png file: " + out_file)
@@ -783,14 +886,17 @@ def make_simple_bar_graphs(frame, dataset, uaa_info, analysis_dir, pdb_name):
     mut_rows = row_select_from_column_filters(frame, dataset)
     
     for avgmin in ['avg', 'min']:
+        legend = {'blue':avgmin+' score'}
         for graph_type in ['delta_total_E', ['delta_total_E','delta_cstE']]:
             data, data_labels, top_models = dataframe_extract(mut_rows, avgmin, \
                     graph_type, columns=['residue','point_mutant_set'])
-            data_name = str(graph_type)
-            legend = {'blue':avgmin+' score'}
-            title = ' '.join(['Normalized', pdb_name, ''.join(data_name), \
+            if type(graph_type) == list:
+                data_name = '+'.join(graph_type)
+            else:
+                data_name = graph_type
+            title = ' '.join(['Normalized', pdb_name, data_name, \
                     dataset[1],'with', dataset[0]+'-'+avgmin])  
-            make_bar_plot(data, data_labels, xlabel, ylabel, title, \
+            make_bar_plot(data, data_labels, xlabel, ylabel, title, min_max_avg=avgmin,\
                     csv_out=top_models, out_dir=analysis_dir, legend_info=legend) 
 
 def make_x_minus_y_bar_graphs(frame, x_filt, y_filt, analysis_dir, pdb_name,\
@@ -816,7 +922,7 @@ def make_x_minus_y_bar_graphs(frame, x_filt, y_filt, analysis_dir, pdb_name,\
                     y_filt[0]+':'+avgmin])  
             make_bar_plot(np.array(x_data), x_tick_names, xlabel, ylabel, title, \
                             out_dir=analysis_dir, legend_info=legend, \
-                            control=np.array(y_data)) 
+                            control=np.array(y_data), min_max_avg=avgmin) 
 
 """
 ##############################################################################
@@ -854,13 +960,12 @@ def make_scatterplot(xvalues, yvalues, xlabel, ylabel, title, filename=None,\
     xvals = xvalues - xcontrol
     yvals = yvalues - ycontrol
     if xylimits:
-        xlimits, ylimits = [[-10,10],[-10,10]]
+        xlimits, ylimits = [[-15,15],[-15,15]]
     else:
         xlimits, ylimits = scatter_edges(xvals, yvals, zoom)
     plt.scatter(xvals, yvals, s=5, c=colors, marker=markers)
     if lines:
         for line in lines:
-            print(line)
             plt.plot(line[0],line[1], '-k', linewidth=1)
     axes = plt.gca()
     axes.set_xlim(xlimits)
@@ -876,18 +981,16 @@ def make_scatterplot(xvalues, yvalues, xlabel, ylabel, title, filename=None,\
     fig = plt.gcf()
     fig.set_size_inches(5,5)
     plt.show()
-    if not filename:
-       filename = title.replace(' ', '_')
-    out_file = '/'.join([outdir,filename + '.png'])
+    out_file = '/'.join([outdir, out_filename_prep(title) + '.png'])
     fig.savefig(out_file, dpi=150)#, bbox_inches='tight')
     plt.close('all')
     print_out("writing png file: " + out_file)
         
-def make_xla_vs_ylb_scatter_plots(frame, x_filt, y_filt, analysis_dir, \
+def make_xla_vs_ylb_scatter_plots(frame, x_filt=[], y_filt=[], analysis_dir='', \
             x_control_filt=0.0, y_control_filt=0.0, ylabel='Delta REU', \
             xlabel='Delta REU', title='Apo vs Bound', mma='min', \
             graph_type='delta_total_E', columns=['residue','point_mutant_set'],\
-            zoom_graph=False, gen_line=[[[-100,100],[-100,100]]]):
+            zoom_graph=False, gen_line=[[[-1000,1000],[0,0]],[[0,0],[-1000,1000]]]):
     """
     Makes bar graphs where it filters one set from another and subtracts one 
     dataset from the other.
@@ -908,7 +1011,6 @@ def make_xla_vs_ylb_scatter_plots(frame, x_filt, y_filt, analysis_dir, \
         y_control_data, y_control_names, ytop_control_models = dataframe_extract( \
                 y_control_rows, mma, graph_type)
         y_control_filt = np.array(y_control_data)
-    
     make_scatterplot(np.array(x_data), np.array(y_data), xlabel, ylabel, \
             title, outdir=analysis_dir, tick_labels=x_tick_names, \
             lines=gen_line, xcontrol=x_control_filt, ycontrol=y_control_filt,
@@ -1051,7 +1153,6 @@ def main(args):
         #Starting up rosetta with the appropriate params files -
         print_out("emd182::Starting rosetta with the following parameters: " + init_args)
         pr.init(init_args)
-        #sys.exit()
 
         #Setup data for constraints and symmdef files
         cstfiles, symdef = symm_cst_args_manage( args.enzdes_cstfiles, \
@@ -1139,10 +1240,21 @@ def main(args):
     cis_trans_uaa = [cis_trans[key] for key in cis_trans.keys()]
     
     graph_types = {'Total E':'delta_total_E',\
-                   'Total+Cst E':['delta_total_E','delta_cstE']}
+                   'Total + CstE':['delta_total_E','delta_cstE']}
+    
+    #make per_resi_graphs.
+    #need to take in multiple arguments:
+    #all - makes every graph.
+    #min - makes comparisons between each minimum scoring point-mutant residue
+    #avg - makes comparisons between the most average model for each set
+    apoholo_cistrans = {'apocis': [apobound[0], cis_trans['cis']],\
+                        'apotrans': [apobound[0], cis_trans['trans']],\
+                        'boundcis': [apobound[1], cis_trans['cis']],\
+                        'boundtrans': [apobound[1], cis_trans['trans']]}
     if args.per_resi_graph:
-        make_per_residue_graphs(collapsed_dataframe, args.out_directory, cst_add=False)
-        make_per_residue_graphs(collapsed_dataframe, args.out_directory, cst_add=True)
+        make_per_residue_graphs(collapsed_dataframe, args.out_directory, 
+                per_type=args.per_resi_graph, comparisons=apoholo_cistrans)
+        #make_per_residue_graphs(collapsed_dataframe, args.out_directory, cst_add=True)
 
     #Filtering on the values
     print("pre filtering")
@@ -1168,32 +1280,31 @@ def main(args):
     #May want to add a conditional the check if constraint energies > 0
     min_max_avg = ['min']
     #Third set of graphs - Scatter Plots - bound vs apo delta scores
-    graph_types = {'Total E':'delta_total_E',\
-                   'Total+Cst E':['delta_total_E','delta_cstE']}
     for key, item in cis_trans.items():
         for gkey, gitem in graph_types.items(): #score variants
             for zoomish in [True, False]: #turn on and off zoom
                 for ma in min_max_avg: #selecting which item type we have
                     curr_title = ' '.join(["Apo vs Bound", gkey, 'for', item, \
-                        pdb_name+',','score='+ma, 'zoom='+str(zoomish)])
+                        pdb_name,'\n','score='+ma, 'zoom='+str(zoomish)])
                     make_xla_vs_ylb_scatter_plots( collapsed_dataframe, \
-                        ['nolig', item], ['yeslig', item], args.out_directory, \
-                        xlabel='Apo REU', ylabel='Bound REU', mma=ma,\
-                        zoom_graph=zoomish, title=curr_title, graph_type=gitem)
+                        x_filt=['nolig', item], y_filt=['yeslig', item], \
+                        analysis_dir=args.out_directory, xlabel='Apo REU', \
+                        ylabel='Bound REU', mma=ma, zoom_graph=zoomish, \
+                        title=curr_title, graph_type=gitem)
 
     #Fourth set of graphs - Scatter Plots for Cis minus Trans apo/bound variants
     d=10
     for gkey, gitem in graph_types.items(): #score variants
         for zoomish in [True, False]: #turn on and off zoom
             for ma in min_max_avg: #selecting which item type we have
-                curr_title = ' '.join(["Cis vs Trans", gkey, 'for', 'AZOF', \
-                    pdb_name+',','score-'+ma, 'zoom-'+str(zoomish)])
+                curr_title = ' '.join(["Cis vs Trans", gkey, 'for', args.unnatural, \
+                    pdb_name+',','\n','score='+ma, 'zoom='+str(zoomish)])
                 make_xla_vs_ylb_scatter_plots( collapsed_dataframe,\
-                    ['nolig', cis_trans['cis']], ['yeslig', cis_trans['cis']],\
-                    args.out_directory, mma=ma, zoom_graph=zoomish, \
-                    title=curr_title, graph_type=gitem,\
+                    x_filt=['nolig', cis_trans['cis']], y_filt=['yeslig', cis_trans['cis']],\
+                    analysis_dir=args.out_directory, mma=ma, zoom_graph=zoomish, \
+                    title=curr_title,graph_type=gitem, \
                     x_control_filt=['nolig', cis_trans['trans']],\
-                    y_control_filt=['yeslig', cis_trans['trans']],\
+                    y_control_filt=['yeslig', cis_trans['trans']], \
                     xlabel='Cis'+' '*d+'Apo REU'+' '*d+'Trans',\
                     ylabel='Cis'+' '*d+'Bound REU'+' '*d+'Trans')
     #args.out_type = 'min,avg,max'

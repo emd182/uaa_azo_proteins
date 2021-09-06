@@ -8,7 +8,7 @@ f="TEVorig"
 PDB="${f}.pdb"
 POS="${f}.pos"
 
-N=1
+N=10
 proc_count=55
 rad=5.5
 outdir="${f}_APF_fr"
