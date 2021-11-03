@@ -74,7 +74,7 @@ def main(args):
     pr.init(init_args)
     sf = pr.get_fa_scorefxn()
     sf.add_weights_from_file('ref2015')
-
+    
     pose = pr.pose_from_pdb(args.input_pdb)
     sf(pose)
 

@@ -75,6 +75,10 @@ def parse_args():
                         default='0,180',required=False, \
                         help='Set degrees needed for the dihedral\
                         constraints - REQUIRED if more than 1 angle for dihedral')
+    parser.add_argument('-cststdev', '--dihedral_constraint_stdev', type=str, \
+                        default='3',required=False, \
+                        help='Constraint standard deviation for the dihedral\
+                        constraints. Use semicolon for multiple angles')
     parser.add_argument('-rig_lig', '--rigid_ligand', action='store_true', \
                         default=False, help="Turn on to prevent ligand repacking")
     parser.add_argument('-sym', '--symmdef_file', type=str, default=False, \
@@ -323,7 +327,7 @@ def apply_match_constraints(pose, match_cst_file):
     AoRMcsts.apply(pose)
 
 def apply_dihedral_constraint(atom_str_list, residue_index, pose, \
-            cst_degrees='0,180'):
+            cst_degrees='0,180', cst_stdev='5.0'):
     atoms = [] #pr.rosetta.utility.vector1_core_id_AtomID()
     index = get_residues_from_subset(residue_index.apply(pose))
     print(index)
@@ -333,7 +337,7 @@ def apply_dihedral_constraint(atom_str_list, residue_index, pose, \
     ambiguous = pr.rosetta.core.scoring.constraints.AmbiguousConstraint()
     for degree_skip in [float(x) for x in cst_degrees.split(',')]: 
         dihedral_func = pr.rosetta.core.scoring.func.CircularHarmonicFunc( \
-                np.radians(degree_skip), np.radians(3.0))
+                np.radians(degree_skip), np.radians(float(cst_stdev)))
         dihedral_cst = pr.rosetta.core.scoring.constraints.DihedralConstraint(\
                 atoms[0], atoms[1], atoms[2], atoms[3], dihedral_func)
         ambiguous.add_individual_constraint(dihedral_cst)
@@ -538,9 +542,11 @@ def main(args):
             if args.dihedral_constraint_atoms:
                 dihedral_atoms = args.dihedral_constraint_atoms.split(';')
                 dihedral_values = args.dihedral_constraint_degrees.split(';')
+                dihedral_cst_stdev = args.dihedral_constraint_stdev.split(';')
                 for dihedrals in range(len(dihedral_atoms)):
                     apply_dihedral_constraint(dihedral_atoms[dihedrals].split(','), \
-                                delta_resi, mutant_pose, dihedral_values[dihedrals])
+                                delta_resi, mutant_pose, dihedral_values[dihedrals],\
+                                dihedral_cst_stdev[dihedrals])
         
         move_map = build_move_map(True, True, True)
 
@@ -571,9 +577,11 @@ def main(args):
             if args.dihedral_constraint_atoms:
                 dihedral_atoms = args.dihedral_constraint_atoms.split(';')
                 dihedral_values = args.dihedral_constraint_degrees.split(';')
+                dihedral_cst_stdev = args.dihedral_constraint_stdev.split(';')
                 for dihedrals in range(len(dihedral_atoms)):
                     apply_dihedral_constraint(dihedral_atoms[dihedrals].split(','), \
-                                delta_resi, mutant_pose, dihedral_values[dihedrals])
+                                delta_resi, mutant_pose, dihedral_values[dihedrals],\
+                                dihedral_cst_stdev[dihedrals])
         
         #Making appropriate residue selections base on if the ligand will be
         #Removed or not, as well as if the ligand is rigid or not.
